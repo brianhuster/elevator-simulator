@@ -90,8 +90,8 @@ False.
 flowchart TD
 A((Define up = false, down = false))
 A --> B{Người dùng ấn nút}
-B -- up --> C{up == false} --> D[up == true] --> E[Gửi yêu cầu, bao gồm số tầng, hướng yêu cầu đến bộ điều phối]
-B -- down --> F{down == false} --> G[down == true] --> E
+B -- up --> C{up == false} --> D[up = true] --> E[Gửi yêu cầu, bao gồm số tầng, hướng yêu cầu đến bộ điều phối]
+B -- down --> F{down == false} --> G[down = true] --> E
 A --> H{Có thang máy đến tầng hiện tại và mở cửa}
 H -- thang đi lên --> I[up = false]
 H -- thang đi xuống --> J[down = false]
