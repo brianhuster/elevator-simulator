@@ -82,7 +82,7 @@ class Elevator {
 		this.floors.forEach(f => {
 			const hasUp = f.upQueue.length > 0;
 			const hasDown = f.downQueue.length > 0;
-			
+
 			if (!hasUp && !hasDown) return;
 
 			let score = Infinity;
@@ -90,29 +90,29 @@ class Elevator {
 			const isAbove = f.level > currentFloor;
 			const isBelow = f.level < currentFloor;
 
-			if (this.state === 'UP' || this.previousState === 'UP') {
-				if (isAbove && hasUp) {
-					score = distance
-				}
-				else {
-					score = 2 * this.floors.length - this.currentFloor - f.level
-				}
+		if (this.state === 'UP' || this.previousState === 'UP') {
+			if (isAbove && hasUp) {
+				score = distance;
 			}
-			else if (this.state === 'DOWN' || this.previousState === 'DOWN') {
-				// Ưu tiên rất cao: Tầng phía dưới có người muốn xuống (cùng hướng)
-				if (isBelow && hasDown) {
-					score = distance
-				}
-				// Ưu tiên trung bình: Tầng phía dưới có người muốn lên
-				else {
-					this.currentFloor + f.level
-				}
-			}
-			// CASE 3: Thang đang IDLE
 			else {
-				// Ưu tiên tầng gần nhất
-				score = distance
+				score = 2 * this.floors.length + distance;
 			}
+		}
+		else if (this.state === 'DOWN' || this.previousState === 'DOWN') {
+			// Ưu tiên rất cao: Tầng phía dưới có người muốn xuống (cùng hướng)
+			if (isBelow && hasDown) {
+				score = distance;
+			}
+			// Ưu tiên trung bình: Tầng phía dưới có người muốn lên
+			else {
+				score = 2 * this.floors.length + distance;
+			}
+		}
+		// CASE 3: Thang đang IDLE
+		else {
+			// Ưu tiên tầng gần nhất
+			score = distance;
+		}
 
 			if (score < bestScore) {
 				bestScore = score;
@@ -123,19 +123,48 @@ class Elevator {
 		return target;
 	}
 
-	shouldStop(floor: number): boolean {
+	shouldStopToPickUpPeople(floor: number): boolean {
 		if (this.internalRequests.has(floor)) return true;
-		if (this.getTotalWeight() < CONFIG.ELEVATOR_CAPACITY) {
-			const floorIndex = floor - 1;
-			// Khi đi lên, đón người muốn lên
-			if (this.state === 'UP' && this.floors[floorIndex].upQueue.length > 0) return true;
-			// Khi đi xuống, đón người muốn xuống
-			if (this.state === 'DOWN' && this.floors[floorIndex].downQueue.length > 0) return true;
-			// Khi IDLE hoặc ở biên tầng, đón bất kỳ ai
-			if (this.state === 'IDLE' && (this.floors[floorIndex].upQueue.length > 0 || this.floors[floorIndex].downQueue.length > 0)) return true;
+		
+		const floorIndex = floor - 1;
+		const currentWeight = this.getTotalWeight();
+		
+		// Kiểm tra xem có thể đón ít nhất 1 người không
+		if (currentWeight < CONFIG.ELEVATOR_CAPACITY) {
+			// Khi đi lên, kiểm tra có người muốn lên VÀ có thể lên được không
+			if (this.state === 'UP' && this.floors[floorIndex].upQueue.length > 0) {
+				// Kiểm tra người nhẹ nhất trong hàng đợi
+				const lightestPerson = this.floors[floorIndex].upQueue.reduce((min, p) => p.weight < min.weight ? p : min);
+				if (currentWeight + lightestPerson.weight <= CONFIG.ELEVATOR_CAPACITY) {
+					return true;
+				}
+			}
+			// Khi đi xuống, kiểm tra có người muốn xuống VÀ có thể lên được không
+			if (this.state === 'DOWN' && this.floors[floorIndex].downQueue.length > 0) {
+				const lightestPerson = this.floors[floorIndex].downQueue.reduce((min, p) => p.weight < min.weight ? p : min);
+				if (currentWeight + lightestPerson.weight <= CONFIG.ELEVATOR_CAPACITY) {
+					return true;
+				}
+			}
+			// Khi IDLE, kiểm tra bất kỳ hàng đợi nào
+			if (this.state === 'IDLE') {
+				const allPeople = [...this.floors[floorIndex].upQueue, ...this.floors[floorIndex].downQueue];
+				if (allPeople.length > 0) {
+					const lightestPerson = allPeople.reduce((min, p) => p.weight < min.weight ? p : min);
+					if (currentWeight + lightestPerson.weight <= CONFIG.ELEVATOR_CAPACITY) {
+						return true;
+					}
+				}
+			}
 			// Đặc biệt: Khi ở tầng biên, cho phép đảo chiều
-			if ((floor === 1 || floor === CONFIG.NUM_FLOORS) && (this.floors[floorIndex].upQueue.length > 0 || this.floors[floorIndex].downQueue.length > 0)) {
-				return true;
+			if (floor === 1 || floor === CONFIG.NUM_FLOORS) {
+				const allPeople = [...this.floors[floorIndex].upQueue, ...this.floors[floorIndex].downQueue];
+				if (allPeople.length > 0) {
+					const lightestPerson = allPeople.reduce((min, p) => p.weight < min.weight ? p : min);
+					if (currentWeight + lightestPerson.weight <= CONFIG.ELEVATOR_CAPACITY) {
+						return true;
+					}
+				}
 			}
 		}
 		return false;
@@ -158,9 +187,17 @@ class Elevator {
 		const floorIndex = floor - 1;
 		const floorObj = this.floors[floorIndex];
 		let pickingUpUp = false;
-		
+
+		// Xử lý đặc biệt cho tầng biên
+		if (floor === CONFIG.NUM_FLOORS) {
+			// Tầng cao nhất: chỉ có thể đi xuống
+			pickingUpUp = false;
+		} else if (floor === 1) {
+			// Tầng 1: chỉ có thể đi lên
+			pickingUpUp = true;
+		}
 		// Nếu vừa đi lên hoặc đang lên, đón người lên
-		if (this.previousState === 'UP') {
+		else if (this.previousState === 'UP') {
 			pickingUpUp = true;
 		}
 		// Nếu vừa đi xuống hoặc đang xuống, đón người xuống
@@ -172,36 +209,37 @@ class Elevator {
 			pickingUpUp = floorObj.upQueue.length >= floorObj.downQueue.length;
 		}
 
-	if (pickingUpUp) {
-		while (floorObj.upQueue.length > 0 && this.getTotalWeight() < CONFIG.ELEVATOR_CAPACITY) {
-			const p = floorObj.upQueue[0]; // Peek first
-			// Kiểm tra xem có thể thêm người này không
-			if (this.getTotalWeight() + p.weight <= CONFIG.ELEVATOR_CAPACITY) {
-				floorObj.upQueue.shift(); // Remove
-				this.passengers.push(p);
-				this.internalRequests.add(p.destFloor);
-			} else {
-				break; // Không đủ chỗ cho người tiếp theo
+		if (pickingUpUp) {
+			while (floorObj.upQueue.length > 0 && this.getTotalWeight() < CONFIG.ELEVATOR_CAPACITY) {
+				const p = floorObj.upQueue[0]; // Peek first
+				// Kiểm tra xem có thể thêm người này không
+				if (this.getTotalWeight() + p.weight <= CONFIG.ELEVATOR_CAPACITY) {
+					floorObj.upQueue.shift(); // Remove
+					this.passengers.push(p);
+					this.internalRequests.add(p.destFloor);
+				} else {
+					break; // Không đủ chỗ cho người tiếp theo
+				}
+			}
+		} else {
+			while (floorObj.downQueue.length > 0 && this.getTotalWeight() < CONFIG.ELEVATOR_CAPACITY) {
+				const p = floorObj.downQueue[0]; // Peek first
+				// Kiểm tra xem có thể thêm người này không
+				if (this.getTotalWeight() + p.weight <= CONFIG.ELEVATOR_CAPACITY) {
+					floorObj.downQueue.shift(); // Remove
+					this.passengers.push(p);
+					this.internalRequests.add(p.destFloor);
+				} else {
+					break; // Không đủ chỗ cho người tiếp theo
+				}
 			}
 		}
-	} else {
-		while (floorObj.downQueue.length > 0 && this.getTotalWeight() < CONFIG.ELEVATOR_CAPACITY) {
-			const p = floorObj.downQueue[0]; // Peek first
-			// Kiểm tra xem có thể thêm người này không
-			if (this.getTotalWeight() + p.weight <= CONFIG.ELEVATOR_CAPACITY) {
-				floorObj.downQueue.shift(); // Remove
-				this.passengers.push(p);
-				this.internalRequests.add(p.destFloor);
-			} else {
-				break; // Không đủ chỗ cho người tiếp theo
-			}
-		}
-	}
 	}
 
 	decideNextMove() {
 		const currentFloor = Math.round(this.currentFloor);
-		
+
+		// Ưu tiên 1: Nếu có người trong thang, phục vụ họ trước
 		if (this.internalRequests.size > 0) {
 			if (this.state === 'UP' && Math.max(...Array.from(this.internalRequests)) > currentFloor) {
 				this.state = 'UP'; return;
@@ -216,12 +254,13 @@ class Elevator {
 			return;
 		}
 
+		// Ưu tiên 2: Tìm yêu cầu từ sảnh chờ
 		const target = this.findNearestRequest();
-		if (target !== null) {
+		if (target !== null && target !== currentFloor) {
 			if (target > currentFloor) this.state = 'UP';
 			else if (target < currentFloor) this.state = 'DOWN';
-			else this.state = 'LOADING';
 		} else {
+			// Không có việc gì, nghỉ
 			this.state = 'IDLE';
 		}
 	}
@@ -243,7 +282,7 @@ class Elevator {
 		// Kiểm tra xem có đang gần đến một tầng không
 		const distanceToFloor = Math.abs(this.currentFloor - currentFloorInt);
 		if (distanceToFloor < speedPerFrameValue / 2) {
-			if (this.shouldStop(currentFloorInt)) {
+			if (this.shouldStopToPickUpPeople(currentFloorInt)) {
 				this.currentFloor = currentFloorInt;
 				this.previousState = this.state;  // Lưu state trước khi chuyển sang LOADING
 				this.state = 'LOADING';
@@ -260,7 +299,7 @@ class Elevator {
 			if (this.currentFloor >= CONFIG.NUM_FLOORS) {
 				this.currentFloor = CONFIG.NUM_FLOORS;
 				// Kiểm tra xem có nên dừng tại tầng cao nhất không
-				if (this.shouldStop(CONFIG.NUM_FLOORS)) {
+				if (this.shouldStopToPickUpPeople(CONFIG.NUM_FLOORS)) {
 					this.previousState = 'UP';
 					this.state = 'LOADING';
 					this.timer = 0;
@@ -270,7 +309,7 @@ class Elevator {
 					this.state = 'IDLE';
 				}
 			}
-			
+
 			// Kiểm tra xem có đi qua tầng mới không
 			const newFloor = Math.floor(this.currentFloor);
 			if (newFloor > previousFloor) {
@@ -282,7 +321,7 @@ class Elevator {
 			if (this.currentFloor <= 1) {
 				this.currentFloor = 1;
 				// Kiểm tra xem có nên dừng tại tầng 1 không
-				if (this.shouldStop(1)) {
+				if (this.shouldStopToPickUpPeople(1)) {
 					this.previousState = 'DOWN';
 					this.state = 'LOADING';
 					this.timer = 0;
@@ -292,7 +331,7 @@ class Elevator {
 					this.state = 'IDLE';
 				}
 			}
-			
+
 			// Kiểm tra xem có đi qua tầng mới không
 			const newFloor = Math.floor(this.currentFloor);
 			if (newFloor < previousFloor) {
@@ -330,7 +369,7 @@ class SimulationEngine {
 		this.personIdCounter = 0;
 		this.completedTrips = [];
 
-		this.elevators = Array.from({ length: config.NUM_ELEVATORS }, (_, i) => 
+		this.elevators = Array.from({ length: config.NUM_ELEVATORS }, (_, i) =>
 			new Elevator(i, this.floors, this)
 		);
 	}
@@ -383,7 +422,7 @@ const LineChart = ({ data, width, height, title }: { data: number[], width: numb
 	const padding = { left: 50, right: 20, top: 20, bottom: 30 };
 	const chartWidth = width - padding.left - padding.right;
 	const chartHeight = height - padding.top - padding.bottom;
-	
+
 	const points = data.map((val, i) => {
 		const x = padding.left + (i / (data.length - 1 || 1)) * chartWidth;
 		const y = padding.top + chartHeight - ((val - minVal) / (maxVal - minVal || 1)) * chartHeight;
@@ -406,39 +445,39 @@ const LineChart = ({ data, width, height, title }: { data: number[], width: numb
 					{/* Lưới nền */}
 					{yLabels.map((label, i) => (
 						<g key={i}>
-							<line 
-								x1={padding.left} 
-								y1={label.y} 
-								x2={padding.left + chartWidth} 
-								y2={label.y} 
-								stroke="#e5e7eb" 
-								strokeWidth="1" 
+							<line
+								x1={padding.left}
+								y1={label.y}
+								x2={padding.left + chartWidth}
+								y2={label.y}
+								stroke="#e5e7eb"
+								strokeWidth="1"
 							/>
-							<text 
-								x={padding.left - 10} 
-								y={label.y + 4} 
-								fontSize="10" 
-								textAnchor="end" 
+							<text
+								x={padding.left - 10}
+								y={label.y + 4}
+								fontSize="10"
+								textAnchor="end"
 								fill="#6b7280"
 							>
 								{label.value}s
 							</text>
 						</g>
 					))}
-					
+
 					{/* Trục */}
 					<line x1={padding.left} y1={padding.top} x2={padding.left} y2={padding.top + chartHeight} stroke="#9ca3af" strokeWidth="2" />
 					<line x1={padding.left} y1={padding.top + chartHeight} x2={padding.left + chartWidth} y2={padding.top + chartHeight} stroke="#9ca3af" strokeWidth="2" />
-					
+
 					{/* Đường biểu đồ */}
 					{data.length > 0 && <polyline fill="none" stroke="#2563eb" strokeWidth="2" points={points} />}
-					
+
 					{/* Nhãn trục X */}
-					<text 
-						x={padding.left + chartWidth / 2} 
-						y={height + 10} 
-						fontSize="10" 
-						textAnchor="middle" 
+					<text
+						x={padding.left + chartWidth / 2}
+						y={height + 10}
+						fontSize="10"
+						textAnchor="middle"
 						fill="#6b7280"
 					>
 						Thời gian
@@ -483,7 +522,7 @@ const App = () => {
 	const [isStarted, setIsStarted] = useState(false);
 	const [isPaused, setIsPaused] = useState(false);
 	const [showConfig, setShowConfig] = useState(false);
-	
+
 	const engineRef = useRef<SimulationEngine | null>(null);
 
 	const [time, setTime] = useState(0);
@@ -536,31 +575,34 @@ const App = () => {
 		if (!isStarted || isPaused || !engineRef.current) return;
 
 		let frameId: number;
+		let frameCount = 0;
 		const loop = () => {
 			engineRef.current!.update();
+			frameCount++;
 
+			// Force update mỗi frame bằng cách thay đổi reference
 			setTime(engineRef.current!.time);
 			setElevators([...engineRef.current!.elevators]);
 			setFloors([...engineRef.current!.floors]);
 
-		if (engineRef.current!.time % 60 === 0) {
-			const trips = engineRef.current!.completedTrips;
-			const avgWait = trips.length > 0 ? trips.reduce((a, b) => a + b, 0) / trips.length / FPS : 0;
-			const maxWait = trips.length > 0 ? Math.max(...trips) / FPS : 0;
+			if (engineRef.current!.time % 60 === 0) {
+				const trips = engineRef.current!.completedTrips;
+				const avgWait = trips.length > 0 ? trips.reduce((a, b) => a + b, 0) / trips.length / FPS : 0;
+				const maxWait = trips.length > 0 ? Math.max(...trips) / FPS : 0;
 
-			setStats(prev => {
-				const newAvgHistory = [...prev.avgWaitTimeHistory, avgWait];
-				const newMaxHistory = [...prev.maxWaitTimeHistory, maxWait];
-				if (newAvgHistory.length > 50) newAvgHistory.shift();
-				if (newMaxHistory.length > 50) newMaxHistory.shift();
-				return {
-					avgWaitTimeHistory: newAvgHistory,
-					maxWaitTimeHistory: newMaxHistory,
-					completedTrips: trips,
-					peopleWaitingPerFloor: engineRef.current!.floors.map(f => f.upQueue.length + f.downQueue.length)
-				};
-			});
-		}
+				setStats(prev => {
+					const newAvgHistory = [...prev.avgWaitTimeHistory, avgWait];
+					const newMaxHistory = [...prev.maxWaitTimeHistory, maxWait];
+					if (newAvgHistory.length > 50) newAvgHistory.shift();
+					if (newMaxHistory.length > 50) newMaxHistory.shift();
+					return {
+						avgWaitTimeHistory: newAvgHistory,
+						maxWaitTimeHistory: newMaxHistory,
+						completedTrips: trips,
+						peopleWaitingPerFloor: engineRef.current!.floors.map(f => f.upQueue.length + f.downQueue.length)
+					};
+				});
+			}
 			frameId = requestAnimationFrame(loop);
 		};
 
@@ -579,57 +621,57 @@ const App = () => {
 					<div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
 						<div>
 							<label style={{ display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 14, color: '#374151' }}>Số tầng</label>
-							<input type="number" value={config.NUM_FLOORS} onChange={e => handleConfigChange('NUM_FLOORS', parseInt(e.target.value) || 10)} 
+							<input type="number" value={config.NUM_FLOORS} onChange={e => handleConfigChange('NUM_FLOORS', parseInt(e.target.value) || 10)}
 								style={{ width: '100%', padding: 10, border: '2px solid #e5e7eb', borderRadius: 8, fontSize: 14 }} min="5" max="20" />
 						</div>
 
 						<div>
 							<label style={{ display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 14, color: '#374151' }}>Số thang máy</label>
-							<input type="number" value={config.NUM_ELEVATORS} onChange={e => handleConfigChange('NUM_ELEVATORS', parseInt(e.target.value) || 2)} 
+							<input type="number" value={config.NUM_ELEVATORS} onChange={e => handleConfigChange('NUM_ELEVATORS', parseInt(e.target.value) || 2)}
 								style={{ width: '100%', padding: 10, border: '2px solid #e5e7eb', borderRadius: 8, fontSize: 14 }} min="1" max="4" />
 						</div>
 
-					<div>
-						<label style={{ display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 14, color: '#374151' }}>Sức chứa thang máy (kg)</label>
-						<input type="number" value={config.ELEVATOR_CAPACITY} onChange={e => handleConfigChange('ELEVATOR_CAPACITY', parseInt(e.target.value) || 600)} 
-							style={{ width: '100%', padding: 10, border: '2px solid #e5e7eb', borderRadius: 8, fontSize: 14 }} min="300" max="1500" step="50" />
-					</div>
+						<div>
+							<label style={{ display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 14, color: '#374151' }}>Sức chứa thang máy (kg)</label>
+							<input type="number" value={config.ELEVATOR_CAPACITY} onChange={e => handleConfigChange('ELEVATOR_CAPACITY', parseInt(e.target.value) || 600)}
+								style={{ width: '100%', padding: 10, border: '2px solid #e5e7eb', borderRadius: 8, fontSize: 14 }} min="300" max="1500" step="50" />
+						</div>
 
-					<div>
-						<label style={{ display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 14, color: '#374151' }}>Khối lượng hành khách (kg): {config.MIN_WEIGHT} - {config.MAX_WEIGHT}</label>
-						<div style={{ display: 'flex', gap: 10 }}>
-							<div style={{ flex: 1 }}>
-								<label style={{ fontSize: 12, color: '#6b7280' }}>Tối thiểu</label>
-								<input type="number" value={config.MIN_WEIGHT} onChange={e => handleConfigChange('MIN_WEIGHT', parseInt(e.target.value) || 45)} 
-									style={{ width: '100%', padding: 8, border: '2px solid #e5e7eb', borderRadius: 8, fontSize: 14 }} min="30" max="80" step="5" />
-							</div>
-							<div style={{ flex: 1 }}>
-								<label style={{ fontSize: 12, color: '#6b7280' }}>Tối đa</label>
-								<input type="number" value={config.MAX_WEIGHT} onChange={e => handleConfigChange('MAX_WEIGHT', parseInt(e.target.value) || 90)} 
-									style={{ width: '100%', padding: 8, border: '2px solid #e5e7eb', borderRadius: 8, fontSize: 14 }} min="60" max="150" step="5" />
+						<div>
+							<label style={{ display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 14, color: '#374151' }}>Khối lượng hành khách (kg): {config.MIN_WEIGHT} - {config.MAX_WEIGHT}</label>
+							<div style={{ display: 'flex', gap: 10 }}>
+								<div style={{ flex: 1 }}>
+									<label style={{ fontSize: 12, color: '#6b7280' }}>Tối thiểu</label>
+									<input type="number" value={config.MIN_WEIGHT} onChange={e => handleConfigChange('MIN_WEIGHT', parseInt(e.target.value) || 45)}
+										style={{ width: '100%', padding: 8, border: '2px solid #e5e7eb', borderRadius: 8, fontSize: 14 }} min="30" max="80" step="5" />
+								</div>
+								<div style={{ flex: 1 }}>
+									<label style={{ fontSize: 12, color: '#6b7280' }}>Tối đa</label>
+									<input type="number" value={config.MAX_WEIGHT} onChange={e => handleConfigChange('MAX_WEIGHT', parseInt(e.target.value) || 90)}
+										style={{ width: '100%', padding: 8, border: '2px solid #e5e7eb', borderRadius: 8, fontSize: 14 }} min="60" max="150" step="5" />
+								</div>
 							</div>
 						</div>
-					</div>
 
 						<div>
 							<label style={{ display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 14, color: '#374151' }}>Tốc độ thang máy (tầng/giây)</label>
-							<input type="number" value={config.ELEVATOR_SPEED} onChange={e => handleConfigChange('ELEVATOR_SPEED', parseFloat(e.target.value) || 1)} 
+							<input type="number" value={config.ELEVATOR_SPEED} onChange={e => handleConfigChange('ELEVATOR_SPEED', parseFloat(e.target.value) || 1)}
 								style={{ width: '100%', padding: 10, border: '2px solid #e5e7eb', borderRadius: 8, fontSize: 14 }} min="0.2" max="5" step="0.2" />
 						</div>
 
 						<div>
 							<label style={{ display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 14, color: '#374151' }}>Tỉ lệ xuất hiện hành khách (người/giây)</label>
-							<input type="number" value={config.PASSENGER_RATE} onChange={e => handleConfigChange('PASSENGER_RATE', parseFloat(e.target.value) || 0.6)} 
+							<input type="number" value={config.PASSENGER_RATE} onChange={e => handleConfigChange('PASSENGER_RATE', parseFloat(e.target.value) || 0.6)}
 								style={{ width: '100%', padding: 10, border: '2px solid #e5e7eb', borderRadius: 8, fontSize: 14 }} min="0.1" max="5" step="0.1" />
 						</div>
 
 						<div>
 							<label style={{ display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 14, color: '#374151' }}>Thời gian mở cửa (giây)</label>
-							<input type="number" value={config.LOADING_TIME} onChange={e => handleConfigChange('LOADING_TIME', parseFloat(e.target.value) || 3)} 
+							<input type="number" value={config.LOADING_TIME} onChange={e => handleConfigChange('LOADING_TIME', parseFloat(e.target.value) || 3)}
 								style={{ width: '100%', padding: 10, border: '2px solid #e5e7eb', borderRadius: 8, fontSize: 14 }} min="1" max="10" step="0.5" />
 						</div>
 
-						<button onClick={handleStart} 
+						<button onClick={handleStart}
 							style={{ marginTop: 10, padding: '14px 0', background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', color: 'white', border: 'none', borderRadius: 8, fontSize: 16, fontWeight: 'bold', cursor: 'pointer', boxShadow: '0 4px 12px rgba(102, 126, 234, 0.4)' }}>
 							Bắt đầu mô phỏng
 						</button>
@@ -652,17 +694,17 @@ const App = () => {
 
 				<div style={{ display: 'flex', gap: 15, alignItems: 'center' }}>
 					{/* Nút điều khiển */}
-					<button onClick={() => setIsPaused(!isPaused)} 
+					<button onClick={() => setIsPaused(!isPaused)}
 						style={{ padding: '8px 20px', background: isPaused ? '#10b981' : '#f59e0b', color: 'white', border: 'none', borderRadius: 6, fontSize: 14, fontWeight: 'bold', cursor: 'pointer' }}>
 						{isPaused ? '▶ Tiếp tục' : '⏸ Tạm dừng'}
 					</button>
-					
-					<button onClick={handleReset} 
+
+					<button onClick={handleReset}
 						style={{ padding: '8px 20px', background: '#ef4444', color: 'white', border: 'none', borderRadius: 6, fontSize: 14, fontWeight: 'bold', cursor: 'pointer' }}>
 						🔄 Reset
 					</button>
 
-					<button onClick={() => setShowConfig(!showConfig)} 
+					<button onClick={() => setShowConfig(!showConfig)}
 						style={{ padding: '8px 20px', background: '#6366f1', color: 'white', border: 'none', borderRadius: 6, fontSize: 14, fontWeight: 'bold', cursor: 'pointer' }}>
 						⚙ Cấu hình
 					</button>
@@ -685,27 +727,27 @@ const App = () => {
 			{showConfig && (
 				<div style={{ position: 'absolute', top: 80, right: 25, background: 'white', padding: 20, borderRadius: 12, boxShadow: '0 10px 40px rgba(0,0,0,0.2)', zIndex: 100, width: 350 }}>
 					<h3 style={{ margin: '0 0 15px 0', fontSize: 18 }}>Điều chỉnh cấu hình</h3>
-					
+
 					<div style={{ display: 'flex', flexDirection: 'column', gap: 15, maxHeight: 400, overflowY: 'auto' }}>
 						<div>
 							<label style={{ display: 'block', marginBottom: 5, fontSize: 13, fontWeight: 600 }}>Tốc độ thang máy: {config.ELEVATOR_SPEED.toFixed(1)} tầng/giây</label>
-							<input type="range" value={config.ELEVATOR_SPEED} onChange={e => handleConfigChange('ELEVATOR_SPEED', parseFloat(e.target.value))} 
+							<input type="range" value={config.ELEVATOR_SPEED} onChange={e => handleConfigChange('ELEVATOR_SPEED', parseFloat(e.target.value))}
 								min="0.2" max="5" step="0.2" style={{ width: '100%' }} />
 						</div>
 
 						<div>
 							<label style={{ display: 'block', marginBottom: 5, fontSize: 13, fontWeight: 600 }}>Tỉ lệ spawn hành khách: {config.PASSENGER_RATE.toFixed(1)} người/giây</label>
-							<input type="range" value={config.PASSENGER_RATE} onChange={e => handleConfigChange('PASSENGER_RATE', parseFloat(e.target.value))} 
+							<input type="range" value={config.PASSENGER_RATE} onChange={e => handleConfigChange('PASSENGER_RATE', parseFloat(e.target.value))}
 								min="0.1" max="5" step="0.1" style={{ width: '100%' }} />
 						</div>
 
 						<div>
 							<label style={{ display: 'block', marginBottom: 5, fontSize: 13, fontWeight: 600 }}>Thời gian mở cửa: {config.LOADING_TIME.toFixed(1)} giây</label>
-							<input type="range" value={config.LOADING_TIME} onChange={e => handleConfigChange('LOADING_TIME', parseFloat(e.target.value))} 
+							<input type="range" value={config.LOADING_TIME} onChange={e => handleConfigChange('LOADING_TIME', parseFloat(e.target.value))}
 								min="1" max="10" step="0.5" style={{ width: '100%' }} />
 						</div>
 
-						<button onClick={applyConfigWhileRunning} 
+						<button onClick={applyConfigWhileRunning}
 							style={{ marginTop: 10, padding: 10, background: '#10b981', color: 'white', border: 'none', borderRadius: 6, fontWeight: 'bold', cursor: 'pointer' }}>
 							Áp dụng
 						</button>
@@ -771,56 +813,58 @@ const App = () => {
 									zIndex: 1
 								}} />
 							))}
-							
+
 							{/* Dây cáp */}
 							<div style={{ position: 'absolute', left: '50%', width: 2, height: '100%', background: '#94a3b8', transform: 'translateX(-50%)', zIndex: 2 }}></div>
 
-						{/* Cabin thang máy */}
-						<div style={{
-							position: 'absolute',
-							bottom: `${((elev.currentFloor - 1) / (config.NUM_FLOORS - 1)) * (100 - 100/config.NUM_FLOORS)}%`,
-							width: '100%',
-							height: `${100 / config.NUM_FLOORS}%`,
-							background: elev.state === 'IDLE' ? '#10b981' : (elev.getTotalWeight() >= config.ELEVATOR_CAPACITY ? '#ef4444' : '#3b82f6'),
-							border: '3px solid #1f2937',
-							borderRadius: 6,
-							display: 'flex',
-							flexDirection: 'column',
-							alignItems: 'center',
-							justifyContent: 'center',
-							color: 'white',
-							transition: 'bottom 0.05s ease-out, background 0.3s ease',
-							zIndex: 10,
-							boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
-						}}>
-							<div style={{ fontWeight: 'bold', fontSize: 16 }}>Tầng {Math.round(elev.currentFloor)}</div>
-							<div style={{ fontSize: 11, opacity: 0.9 }}>{elev.getTotalWeight()}kg / {config.ELEVATOR_CAPACITY}kg</div>
-							<div style={{ fontSize: 10, opacity: 0.8 }}>({elev.passengers.length} người)</div>
+							{/* Cabin thang máy */}
+							<div style={{
+								position: 'absolute',
+								bottom: `${((elev.currentFloor - 1) / (config.NUM_FLOORS - 1)) * (100 - 100 / config.NUM_FLOORS)}%`,
+								width: '100%',
+								height: `${100 / config.NUM_FLOORS}%`,
+								background: elev.state === 'IDLE' ? '#10b981' : (elev.getTotalWeight() >= config.ELEVATOR_CAPACITY ? '#ef4444' : '#3b82f6'),
+								border: '3px solid #1f2937',
+								borderRadius: 6,
+								display: 'flex',
+								flexDirection: 'column',
+								alignItems: 'center',
+								justifyContent: 'center',
+								color: 'white',
+								transition: 'background 0.3s ease',
+								willChange: 'bottom',
+								transform: 'translateZ(0)',
+								zIndex: 10,
+								boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
+							}}>
+								<div style={{ fontWeight: 'bold', fontSize: 16 }}>Tầng {Math.round(elev.currentFloor)}</div>
+								<div style={{ fontSize: 11, opacity: 0.9 }}>{elev.getTotalWeight()}kg / {config.ELEVATOR_CAPACITY}kg</div>
+								<div style={{ fontSize: 10, opacity: 0.8 }}>({elev.passengers.length} người)</div>
 
-							{/* Chỉ hướng đi của thang */}
-							{(elev.state === 'UP' || elev.state === 'DOWN') && (
-								<div style={{ position: 'absolute', right: -25, color: '#3b82f6', fontWeight: 'bold' }}>
-									{elev.state === 'UP' ? '▲' : '▼'}
-								</div>
-							)}
-						</div>
+								{/* Chỉ hướng đi của thang */}
+								{(elev.state === 'UP' || elev.state === 'DOWN') && (
+									<div style={{ position: 'absolute', right: -25, color: '#3b82f6', fontWeight: 'bold' }}>
+										{elev.state === 'UP' ? '▲' : '▼'}
+									</div>
+								)}
+							</div>
 						</div>
 					))}
 				</div>
 			</div>
 
-		{/* BIỂU ĐỒ */}
-		<div style={{ flex: '2', display: 'flex', gap: 20, padding: '0 15px 15px' }}>
-			<div style={{ flex: 1 }}>
-				<LineChart data={stats.avgWaitTimeHistory} width={350} height={150} title="Thời gian chờ trung bình" />
+			{/* BIỂU ĐỒ */}
+			<div style={{ flex: '2', display: 'flex', gap: 20, padding: '0 15px 15px' }}>
+				<div style={{ flex: 1 }}>
+					<LineChart data={stats.avgWaitTimeHistory} width={350} height={150} title="Thời gian chờ trung bình" />
+				</div>
+				<div style={{ flex: 1 }}>
+					<LineChart data={stats.maxWaitTimeHistory} width={350} height={150} title="Thời gian chờ tối đa" />
+				</div>
+				<div style={{ flex: 1 }}>
+					<BarChart data={stats.peopleWaitingPerFloor} width={350} height={150} title="Số người chờ tại mỗi tầng" />
+				</div>
 			</div>
-			<div style={{ flex: 1 }}>
-				<LineChart data={stats.maxWaitTimeHistory} width={350} height={150} title="Thời gian chờ tối đa" />
-			</div>
-			<div style={{ flex: 1 }}>
-				<BarChart data={stats.peopleWaitingPerFloor} width={350} height={150} title="Số người chờ tại mỗi tầng" />
-			</div>
-		</div>
 		</div>
 	);
 };

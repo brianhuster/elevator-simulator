@@ -1,1 +1,2 @@
-- [ ] Cần tính hiệu suất 
+- [ ] Cần tính hiệu suất
+- [ ] Tầng 1 có xu hướng đông người hơn các tầng khác
