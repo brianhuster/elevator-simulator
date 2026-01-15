@@ -37,6 +37,7 @@ interface Person {
 	startFloor: number;
 	destFloor: number;
 	spawnTime: number;
+	boardingTime?: number; // Thời điểm lên thang máy
 	direction: 'UP' | 'DOWN';
 	weight: number; // kg
 }
@@ -45,6 +46,8 @@ interface Floor {
 	level: number;
 	upQueue: Person[];
 	downQueue: Person[];
+	upAssigned: boolean; // Yêu cầu lên đã được gán cho thang máy chưa
+	downAssigned: boolean; // Yêu cầu xuống đã được gán cho thang máy chưa
 }
 
 class Elevator {
@@ -53,6 +56,7 @@ class Elevator {
 	state: ElevatorState;
 	passengers: Person[];
 	internalRequests: Set<number>;
+	externalRequests: { floor: number; direction: 'UP' | 'DOWN' }[]; // Yêu cầu được gán từ dispatcher
 	timer: number;
 	previousState: ElevatorState;  // Lưu state trước đó để biết hướng khi state == "LOADING"
 	private readonly floors: Floor[];
@@ -65,6 +69,7 @@ class Elevator {
 		this.previousState = 'IDLE';
 		this.passengers = [];
 		this.internalRequests = new Set();
+		this.externalRequests = [];
 		this.timer = 0;
 		this.floors = floors;
 		this.engine = engine;
@@ -75,48 +80,43 @@ class Elevator {
 	}
 
 	findNearestRequest(): number | null {
+		// Chỉ xử lý các yêu cầu đã được gán cho thang máy này
+		if (this.externalRequests.length === 0) return null;
+
 		const currentFloor = Math.round(this.currentFloor);
 		let bestScore = Infinity;
 		let target: number | null = null;
 
-		this.floors.forEach(f => {
-			const hasUp = f.upQueue.length > 0;
-			const hasDown = f.downQueue.length > 0;
-
-			if (!hasUp && !hasDown) return;
-
+		this.externalRequests.forEach(req => {
 			let score = Infinity;
-			const distance = Math.abs(f.level - currentFloor);
-			const isAbove = f.level > currentFloor;
-			const isBelow = f.level < currentFloor;
+			const distance = Math.abs(req.floor - currentFloor);
+			const isAbove = req.floor > currentFloor;
+			const isBelow = req.floor < currentFloor;
 
-		if (this.state === 'UP' || this.previousState === 'UP') {
-			if (isAbove && hasUp) {
-				score = distance;
+			if (this.state === 'UP' || this.previousState === 'UP') {
+				if (isAbove && req.direction === 'UP') {
+					score = distance;
+				}
+				else {
+					// score = (this.floors.length - req.floor) + (this.floors.length - currentFloor);
+					score = 2 * this.floors.length - (req.floor - currentFloor)
+				}
+			}
+			else if (this.state === 'DOWN' || this.previousState === 'DOWN') {
+				if (isBelow && req.direction === 'DOWN') {
+					score = distance;
+				}
+				else {
+					score = req.floor + currentFloor;
+				}
 			}
 			else {
-				score = 2 * this.floors.length + distance;
-			}
-		}
-		else if (this.state === 'DOWN' || this.previousState === 'DOWN') {
-			// Ưu tiên rất cao: Tầng phía dưới có người muốn xuống (cùng hướng)
-			if (isBelow && hasDown) {
 				score = distance;
 			}
-			// Ưu tiên trung bình: Tầng phía dưới có người muốn lên
-			else {
-				score = 2 * this.floors.length + distance;
-			}
-		}
-		// CASE 3: Thang đang IDLE
-		else {
-			// Ưu tiên tầng gần nhất
-			score = distance;
-		}
 
 			if (score < bestScore) {
 				bestScore = score;
-				target = f.level;
+				target = req.floor;
 			}
 		});
 
@@ -125,6 +125,10 @@ class Elevator {
 
 	shouldStopToPickUpPeople(floor: number): boolean {
 		if (this.internalRequests.has(floor)) return true;
+		
+		// Kiểm tra xem tầng này có trong danh sách yêu cầu được gán không
+		const hasExternalRequest = this.externalRequests.some(req => req.floor === floor);
+		if (!hasExternalRequest) return false;
 		
 		const floorIndex = floor - 1;
 		const currentWeight = this.getTotalWeight();
@@ -175,7 +179,7 @@ class Elevator {
 		const remainingPassengers = [];
 		for (const p of this.passengers) {
 			if (p.destFloor === floor) {
-				this.engine.completedTrips.push(this.engine.time - p.spawnTime);
+				// Không cần ghi nhận gì khi trả khách
 			} else {
 				remainingPassengers.push(p);
 			}
@@ -215,11 +219,19 @@ class Elevator {
 				// Kiểm tra xem có thể thêm người này không
 				if (this.getTotalWeight() + p.weight <= CONFIG.ELEVATOR_CAPACITY) {
 					floorObj.upQueue.shift(); // Remove
+					p.boardingTime = this.engine.time; // Ghi nhận thời điểm lên thang máy
+					// Tính thời gian chờ và lưu vào completedTrips
+					this.engine.completedTrips.push(this.engine.time - p.spawnTime);
 					this.passengers.push(p);
 					this.internalRequests.add(p.destFloor);
 				} else {
 					break; // Không đủ chỗ cho người tiếp theo
 				}
+			}
+			// Xóa yêu cầu UP khỏi danh sách externalRequests nếu đã đón hết hoặc không còn người
+			if (floorObj.upQueue.length === 0) {
+				this.externalRequests = this.externalRequests.filter(req => !(req.floor === floor && req.direction === 'UP'));
+				floorObj.upAssigned = false;
 			}
 		} else {
 			while (floorObj.downQueue.length > 0 && this.getTotalWeight() < CONFIG.ELEVATOR_CAPACITY) {
@@ -227,11 +239,19 @@ class Elevator {
 				// Kiểm tra xem có thể thêm người này không
 				if (this.getTotalWeight() + p.weight <= CONFIG.ELEVATOR_CAPACITY) {
 					floorObj.downQueue.shift(); // Remove
+					p.boardingTime = this.engine.time; // Ghi nhận thời điểm lên thang máy
+					// Tính thời gian chờ và lưu vào completedTrips
+					this.engine.completedTrips.push(this.engine.time - p.spawnTime);
 					this.passengers.push(p);
 					this.internalRequests.add(p.destFloor);
 				} else {
 					break; // Không đủ chỗ cho người tiếp theo
 				}
+			}
+			// Xóa yêu cầu DOWN khỏi danh sách externalRequests nếu đã đón hết hoặc không còn người
+			if (floorObj.downQueue.length === 0) {
+				this.externalRequests = this.externalRequests.filter(req => !(req.floor === floor && req.direction === 'DOWN'));
+				floorObj.downAssigned = false;
 			}
 		}
 	}
@@ -345,10 +365,11 @@ class Elevator {
 }
 
 interface SimStats {
-	avgWaitTimeHistory: number[];
-	maxWaitTimeHistory: number[];
+	avgWaitTimeHistory: { time: number; value: number }[];
+	maxWaitTimeHistory: { time: number; value: number }[];
 	completedTrips: number[];
 	peopleWaitingPerFloor: number[];
+	totalActiveTime: number; // Tổng thời gian các thang máy hoạt động (không IDLE)
 }
 
 class SimulationEngine {
@@ -357,17 +378,21 @@ class SimulationEngine {
 	time: number;
 	personIdCounter: number;
 	completedTrips: number[];
+	totalActiveTime: number; // Tổng thời gian các thang máy hoạt động
 
 	constructor(config: Config) {
 		this.floors = Array.from({ length: config.NUM_FLOORS }, (_, i) => ({
 			level: i + 1,
 			upQueue: [],
 			downQueue: [],
+			upAssigned: false,
+			downAssigned: false,
 		}));
 
 		this.time = 0;
 		this.personIdCounter = 0;
 		this.completedTrips = [];
+		this.totalActiveTime = 0;
 
 		this.elevators = Array.from({ length: config.NUM_ELEVATORS }, (_, i) =>
 			new Elevator(i, this.floors, this)
@@ -380,13 +405,85 @@ class SimulationEngine {
 			level: i + 1,
 			upQueue: [],
 			downQueue: [],
+			upAssigned: false,
+			downAssigned: false,
 		}));
 		this.time = 0;
 		this.personIdCounter = 0;
 		this.completedTrips = [];
+		this.totalActiveTime = 0;
 		this.elevators = Array.from({ length: config.NUM_ELEVATORS }, (_, i) =>
 			new Elevator(i, this.floors, this)
 		);
+	}
+
+	// Tính điểm số khoảng cách của một thang máy đến một yêu cầu
+	calculateElevatorScore(elevator: Elevator, floor: number, direction: 'UP' | 'DOWN'): number {
+		const currentFloor = Math.round(elevator.currentFloor);
+		const distance = Math.abs(floor - currentFloor);
+		const isAbove = floor > currentFloor;
+		const isBelow = floor < currentFloor;
+
+		// Sử dụng cùng logic với findNearestRequest
+		if (elevator.state === 'UP' || elevator.previousState === 'UP') {
+			if (isAbove && direction === 'UP') {
+				return distance;
+			} else {
+				return 2 * this.floors.length + distance;
+			}
+		} else if (elevator.state === 'DOWN' || elevator.previousState === 'DOWN') {
+			if (isBelow && direction === 'DOWN') {
+				return distance;
+			} else {
+				return 2 * this.floors.length + distance;
+			}
+		} else {
+			// IDLE
+			return distance;
+		}
+	}
+
+	// Phân bổ yêu cầu chưa được gán cho thang máy gần nhất
+	dispatchRequests() {
+		for (const floor of this.floors) {
+			// Xử lý yêu cầu UP chưa được gán
+			if (floor.upQueue.length > 0 && !floor.upAssigned) {
+				let bestElevator: Elevator | undefined = undefined;
+				let bestScore = Infinity;
+
+				for (const elevator of this.elevators) {
+					const score = this.calculateElevatorScore(elevator, floor.level, 'UP');
+					if (score < bestScore) {
+						bestScore = score;
+						bestElevator = elevator;
+					}
+				}
+
+				if (bestElevator !== undefined) {
+					bestElevator.externalRequests.push({ floor: floor.level, direction: 'UP' });
+					floor.upAssigned = true;
+				}
+			}
+
+			// Xử lý yêu cầu DOWN chưa được gán
+			if (floor.downQueue.length > 0 && !floor.downAssigned) {
+				let bestElevator: Elevator | undefined = undefined;
+				let bestScore = Infinity;
+
+				for (const elevator of this.elevators) {
+					const score = this.calculateElevatorScore(elevator, floor.level, 'DOWN');
+					if (score < bestScore) {
+						bestScore = score;
+						bestElevator = elevator;
+					}
+				}
+
+				if (bestElevator !== undefined) {
+					bestElevator.externalRequests.push({ floor: floor.level, direction: 'DOWN' });
+					floor.downAssigned = true;
+				}
+			}
+		}
 	}
 
 	update() {
@@ -411,21 +508,30 @@ class SimulationEngine {
 			else this.floors[floorIndex].downQueue.push(person);
 		}
 
-		// 2. Cập nhật thang máy
-		this.elevators.forEach(elev => elev.update());
+		// 2. Phân bổ yêu cầu từ sảnh chờ cho thang máy gần nhất
+		this.dispatchRequests();
+
+		// 3. Cập nhật thang máy
+		this.elevators.forEach(elev => {
+			// Tính thời gian hoạt động (không IDLE)
+			if (elev.state !== 'IDLE') {
+				this.totalActiveTime++;
+			}
+			elev.update();
+		});
 	}
 }
 
-const LineChart = ({ data, width, height, title }: { data: number[], width: number, height: number, title: string }) => {
-	const maxVal = Math.max(...data, 10);
+const LineChart = ({ data, width, height, title }: { data: { time: number; value: number }[], width: number, height: number, title: string }) => {
+	const maxVal = Math.max(...data.map(d => d.value), 10);
 	const minVal = 0;
-	const padding = { left: 50, right: 20, top: 20, bottom: 30 };
+	const padding = { left: 50, right: 20, top: 20, bottom: 40 };
 	const chartWidth = width - padding.left - padding.right;
 	const chartHeight = height - padding.top - padding.bottom;
 
-	const points = data.map((val, i) => {
+	const points = data.map((d, i) => {
 		const x = padding.left + (i / (data.length - 1 || 1)) * chartWidth;
-		const y = padding.top + chartHeight - ((val - minVal) / (maxVal - minVal || 1)) * chartHeight;
+		const y = padding.top + chartHeight - ((d.value - minVal) / (maxVal - minVal || 1)) * chartHeight;
 		return `${x},${y}`;
 	}).join(' ');
 
@@ -437,11 +543,23 @@ const LineChart = ({ data, width, height, title }: { data: number[], width: numb
 		yLabels.push({ value: value.toFixed(1), y });
 	}
 
+	// Tạo nhãn trục X (hiển thị thời gian thực tế)
+	const xLabels = [];
+	const numXLabels = Math.min(10, data.length); // Hiển thị tối đa 10 nhãn
+	if (data.length > 0) {
+		for (let i = 0; i < numXLabels; i++) {
+			const dataIndex = Math.floor((i / (numXLabels - 1 || 1)) * (data.length - 1));
+			const x = padding.left + (dataIndex / (data.length - 1 || 1)) * chartWidth;
+			const timeInSeconds = data[dataIndex].time;
+			xLabels.push({ time: timeInSeconds, x });
+		}
+	}
+
 	return (
 		<div style={{ border: '1px solid #ddd', borderRadius: 8, padding: 10, background: 'white', display: 'flex', flexDirection: 'column' }}>
 			<h4 style={{ margin: '0 0 10px 0', fontSize: 14, textAlign: 'center' }}>{title}</h4>
 			<div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-				<svg width={width} height={height + 10} style={{ overflow: 'visible' }}>
+				<svg width={width} height={height + 20} style={{ overflow: 'visible' }}>
 					{/* Lưới nền */}
 					{yLabels.map((label, i) => (
 						<g key={i}>
@@ -473,46 +591,32 @@ const LineChart = ({ data, width, height, title }: { data: number[], width: numb
 					{data.length > 0 && <polyline fill="none" stroke="#2563eb" strokeWidth="2" points={points} />}
 
 					{/* Nhãn trục X */}
+					{xLabels.map((label, i) => (
+						<text
+							key={i}
+							x={label.x}
+							y={padding.top + chartHeight + 20}
+							fontSize="10"
+							textAnchor="middle"
+							fill="#6b7280"
+						>
+							{label.time}s
+						</text>
+					))}
+
+					{/* Tiêu đề trục X */}
 					<text
 						x={padding.left + chartWidth / 2}
-						y={height + 10}
-						fontSize="10"
+						y={height + 20}
+						fontSize="11"
 						textAnchor="middle"
-						fill="#6b7280"
+						fill="#374151"
+						fontWeight="bold"
 					>
-						Thời gian
+						Thời gian (giây)
 					</text>
 				</svg>
 			</div>
-		</div>
-	);
-};
-
-const BarChart = ({ data, width, height, title }: { data: number[], width: number, height: number, title: string }) => {
-	const maxVal = Math.max(...data, 5);
-	const barWidth = (width / data.length) - 5;
-
-	return (
-		<div style={{ border: '1px solid #ddd', borderRadius: 8, padding: 10, background: 'white', display: 'flex', flexDirection: 'column' }}>
-			<h4 style={{ margin: '0 0 10px 0', fontSize: 14, textAlign: 'center' }}>{title}</h4>
-			<div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-				<svg width={width} height={height} style={{ overflow: 'visible' }}>
-					{data.map((val, i) => (
-						<g key={i}>
-							<rect
-								x={i * (width / data.length)}
-								y={height - (val / maxVal) * height}
-								width={barWidth}
-								height={(val / maxVal) * height}
-								fill={val > 0 ? "#f97316" : "#eee"}
-							/>
-							<text x={i * (width / data.length) + barWidth / 2} y={height + 12} fontSize="10" textAnchor="middle" fill="gray">{i}</text>
-							{val > 0 && <text x={i * (width / data.length) + barWidth / 2} y={height - (val / maxVal) * height - 5} fontSize="10" textAnchor="middle" fill="black">{val}</text>}
-						</g>
-					))}
-				</svg>
-			</div>
-			<div style={{ fontSize: 10, color: 'gray', marginTop: 5, textAlign: 'center' }}>Số người chờ từng tầng</div>
 		</div>
 	);
 };
@@ -532,7 +636,8 @@ const App = () => {
 		avgWaitTimeHistory: [],
 		maxWaitTimeHistory: [],
 		completedTrips: [],
-		peopleWaitingPerFloor: []
+		peopleWaitingPerFloor: [],
+		totalActiveTime: 0
 	});
 
 	const formatTime = (frames: number) => {
@@ -557,7 +662,8 @@ const App = () => {
 				avgWaitTimeHistory: [],
 				maxWaitTimeHistory: [],
 				completedTrips: [],
-				peopleWaitingPerFloor: []
+				peopleWaitingPerFloor: [],
+				totalActiveTime: 0
 			});
 		}
 	};
@@ -586,20 +692,39 @@ const App = () => {
 			setFloors([...engineRef.current!.floors]);
 
 			if (engineRef.current!.time % 60 === 0) {
-				const trips = engineRef.current!.completedTrips;
-				const avgWait = trips.length > 0 ? trips.reduce((a, b) => a + b, 0) / trips.length / FPS : 0;
-				const maxWait = trips.length > 0 ? Math.max(...trips) / FPS : 0;
+				const engine = engineRef.current!;
+				const currentTime = engine.time;
+				
+				// Thu thập tất cả thời gian chờ (đã hoàn thành)
+				const completedWaitTimes = engine.completedTrips;
+				
+				// Thu thập thời gian chờ hiện tại của những người đang đợi
+				const currentWaitTimes: number[] = [];
+				engine.floors.forEach(floor => {
+					floor.upQueue.forEach(person => {
+						currentWaitTimes.push(currentTime - person.spawnTime);
+					});
+					floor.downQueue.forEach(person => {
+						currentWaitTimes.push(currentTime - person.spawnTime);
+					});
+				});
+				
+				// Kết hợp cả hai để tính toán
+				const allWaitTimes = [...completedWaitTimes, ...currentWaitTimes];
+				const avgWait = allWaitTimes.length > 0 ? allWaitTimes.reduce((a, b) => a + b, 0) / allWaitTimes.length / FPS : 0;
+				const maxWait = allWaitTimes.length > 0 ? Math.max(...allWaitTimes) / FPS : 0;
+				const currentTimeInSeconds = Math.floor(currentTime / FPS);
 
 				setStats(prev => {
-					const newAvgHistory = [...prev.avgWaitTimeHistory, avgWait];
-					const newMaxHistory = [...prev.maxWaitTimeHistory, maxWait];
-					if (newAvgHistory.length > 50) newAvgHistory.shift();
-					if (newMaxHistory.length > 50) newMaxHistory.shift();
+					const newAvgHistory = [...prev.avgWaitTimeHistory, { time: currentTimeInSeconds, value: avgWait }];
+					const newMaxHistory = [...prev.maxWaitTimeHistory, { time: currentTimeInSeconds, value: maxWait }];
+					// Không giới hạn số lượng điểm để luôn hiển thị từ đầu
 					return {
 						avgWaitTimeHistory: newAvgHistory,
 						maxWaitTimeHistory: newMaxHistory,
-						completedTrips: trips,
-						peopleWaitingPerFloor: engineRef.current!.floors.map(f => f.upQueue.length + f.downQueue.length)
+						completedTrips: completedWaitTimes,
+						peopleWaitingPerFloor: engine.floors.map(f => f.upQueue.length + f.downQueue.length),
+						totalActiveTime: engine.totalActiveTime
 					};
 				});
 			}
@@ -714,6 +839,18 @@ const App = () => {
 						<div style={{ fontSize: 24, fontWeight: 'bold', color: '#10b981' }}>{stats.completedTrips.length} <span style={{ fontSize: 14 }}>người</span></div>
 					</div>
 
+					<div style={{ textAlign: 'right' }}>
+						<div style={{ fontSize: 12, color: '#9ca3af' }}>Hiệu suất</div>
+						<div style={{ fontSize: 24, fontWeight: 'bold', color: '#3b82f6' }}>
+							{(() => {
+								const totalPossibleTime = time * config.NUM_ELEVATORS;
+								const efficiency = totalPossibleTime > 0 ? (stats.totalActiveTime / totalPossibleTime * 100) : 0;
+								return efficiency.toFixed(1);
+							})()}
+							<span style={{ fontSize: 14 }}>%</span>
+						</div>
+					</div>
+
 					<div style={{ background: '#374151', padding: '5px 15px', borderRadius: 6, textAlign: 'center', border: '1px solid #4b5563' }}>
 						<div style={{ fontSize: 10, color: '#d1d5db', textTransform: 'uppercase', letterSpacing: 1 }}>Thời gian</div>
 						<div style={{ fontSize: 24, fontFamily: 'monospace', fontWeight: 'bold', color: '#fbbf24' }}>
@@ -799,7 +936,7 @@ const App = () => {
 				))}
 
 				{/* Khu vực thang máy */}
-				<div style={{ position: 'absolute', right: 50, height: '100%', width: 250, display: 'flex', justifyContent: 'space-between' }}>
+				<div style={{ position: 'absolute', right: 50, height: '100%', width: `${config.NUM_ELEVATORS * 80 + (config.NUM_ELEVATORS - 1) * 20}px`, display: 'flex', gap: 20 }}>
 					{elevators.map((elev, _) => (
 						<div key={elev.id} style={{ width: 80, height: '100%', position: 'relative' }}>
 							{/* Đường kẻ ngang tại mỗi tầng */}
@@ -853,18 +990,15 @@ const App = () => {
 				</div>
 			</div>
 
-			{/* BIỂU ĐỒ */}
-			<div style={{ flex: '2', display: 'flex', gap: 20, padding: '0 15px 15px' }}>
-				<div style={{ flex: 1 }}>
-					<LineChart data={stats.avgWaitTimeHistory} width={350} height={150} title="Thời gian chờ trung bình" />
-				</div>
-				<div style={{ flex: 1 }}>
-					<LineChart data={stats.maxWaitTimeHistory} width={350} height={150} title="Thời gian chờ tối đa" />
-				</div>
-				<div style={{ flex: 1 }}>
-					<BarChart data={stats.peopleWaitingPerFloor} width={350} height={150} title="Số người chờ tại mỗi tầng" />
-				</div>
+		{/* BIỂU ĐỒ */}
+		<div style={{ flex: '2', display: 'flex', flexDirection: 'column', gap: 15, padding: '0 15px 15px' }}>
+			<div style={{ width: '100%' }}>
+				<LineChart data={stats.avgWaitTimeHistory} width={800} height={150} title="Thời gian chờ trung bình" />
 			</div>
+			<div style={{ width: '100%' }}>
+				<LineChart data={stats.maxWaitTimeHistory} width={800} height={150} title="Thời gian chờ tối đa" />
+			</div>
+		</div>
 		</div>
 	);
 };
