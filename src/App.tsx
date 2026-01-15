@@ -213,47 +213,57 @@ class Elevator {
 			pickingUpUp = floorObj.upQueue.length >= floorObj.downQueue.length;
 		}
 
-		if (pickingUpUp) {
-			while (floorObj.upQueue.length > 0 && this.getTotalWeight() < CONFIG.ELEVATOR_CAPACITY) {
-				const p = floorObj.upQueue[0]; // Peek first
-				// Kiểm tra xem có thể thêm người này không
-				if (this.getTotalWeight() + p.weight <= CONFIG.ELEVATOR_CAPACITY) {
-					floorObj.upQueue.shift(); // Remove
-					p.boardingTime = this.engine.time; // Ghi nhận thời điểm lên thang máy
-					// Tính thời gian chờ và lưu vào completedTrips
-					this.engine.completedTrips.push(this.engine.time - p.spawnTime);
-					this.passengers.push(p);
-					this.internalRequests.add(p.destFloor);
-				} else {
-					break; // Không đủ chỗ cho người tiếp theo
-				}
-			}
-			// Xóa yêu cầu UP khỏi danh sách externalRequests nếu đã đón hết hoặc không còn người
-			if (floorObj.upQueue.length === 0) {
-				this.externalRequests = this.externalRequests.filter(req => !(req.floor === floor && req.direction === 'UP'));
-				floorObj.upAssigned = false;
-			}
-		} else {
-			while (floorObj.downQueue.length > 0 && this.getTotalWeight() < CONFIG.ELEVATOR_CAPACITY) {
-				const p = floorObj.downQueue[0]; // Peek first
-				// Kiểm tra xem có thể thêm người này không
-				if (this.getTotalWeight() + p.weight <= CONFIG.ELEVATOR_CAPACITY) {
-					floorObj.downQueue.shift(); // Remove
-					p.boardingTime = this.engine.time; // Ghi nhận thời điểm lên thang máy
-					// Tính thời gian chờ và lưu vào completedTrips
-					this.engine.completedTrips.push(this.engine.time - p.spawnTime);
-					this.passengers.push(p);
-					this.internalRequests.add(p.destFloor);
-				} else {
-					break; // Không đủ chỗ cho người tiếp theo
-				}
-			}
-			// Xóa yêu cầu DOWN khỏi danh sách externalRequests nếu đã đón hết hoặc không còn người
-			if (floorObj.downQueue.length === 0) {
-				this.externalRequests = this.externalRequests.filter(req => !(req.floor === floor && req.direction === 'DOWN'));
-				floorObj.downAssigned = false;
+	if (pickingUpUp) {
+		const initialQueueLength = floorObj.upQueue.length;
+		while (floorObj.upQueue.length > 0 && this.getTotalWeight() < CONFIG.ELEVATOR_CAPACITY) {
+			const p = floorObj.upQueue[0]; // Peek first
+			// Kiểm tra xem có thể thêm người này không
+			if (this.getTotalWeight() + p.weight <= CONFIG.ELEVATOR_CAPACITY) {
+				floorObj.upQueue.shift(); // Remove
+				p.boardingTime = this.engine.time; // Ghi nhận thời điểm lên thang máy
+				// Tính thời gian chờ và lưu vào completedTrips
+				this.engine.completedTrips.push(this.engine.time - p.spawnTime);
+				this.passengers.push(p);
+				this.internalRequests.add(p.destFloor);
+			} else {
+				break; // Không đủ chỗ cho người tiếp theo
 			}
 		}
+		// Xóa yêu cầu UP khỏi danh sách externalRequests nếu đã đón hết
+		if (floorObj.upQueue.length === 0) {
+			this.externalRequests = this.externalRequests.filter(req => !(req.floor === floor && req.direction === 'UP'));
+			floorObj.upAssigned = false;
+		} else if (initialQueueLength > 0 && floorObj.upQueue.length > 0) {
+			// BUG FIX: Nếu vẫn còn người chờ (thang máy đầy), reset assigned để dispatcher có thể gán lại
+			this.externalRequests = this.externalRequests.filter(req => !(req.floor === floor && req.direction === 'UP'));
+			floorObj.upAssigned = false;
+		}
+	} else {
+		const initialQueueLength = floorObj.downQueue.length;
+		while (floorObj.downQueue.length > 0 && this.getTotalWeight() < CONFIG.ELEVATOR_CAPACITY) {
+			const p = floorObj.downQueue[0]; // Peek first
+			// Kiểm tra xem có thể thêm người này không
+			if (this.getTotalWeight() + p.weight <= CONFIG.ELEVATOR_CAPACITY) {
+				floorObj.downQueue.shift(); // Remove
+				p.boardingTime = this.engine.time; // Ghi nhận thời điểm lên thang máy
+				// Tính thời gian chờ và lưu vào completedTrips
+				this.engine.completedTrips.push(this.engine.time - p.spawnTime);
+				this.passengers.push(p);
+				this.internalRequests.add(p.destFloor);
+			} else {
+				break; // Không đủ chỗ cho người tiếp theo
+			}
+		}
+		// Xóa yêu cầu DOWN khỏi danh sách externalRequests nếu đã đón hết
+		if (floorObj.downQueue.length === 0) {
+			this.externalRequests = this.externalRequests.filter(req => !(req.floor === floor && req.direction === 'DOWN'));
+			floorObj.downAssigned = false;
+		} else if (initialQueueLength > 0 && floorObj.downQueue.length > 0) {
+			// BUG FIX: Nếu vẫn còn người chờ (thang máy đầy), reset assigned để dispatcher có thể gán lại
+			this.externalRequests = this.externalRequests.filter(req => !(req.floor === floor && req.direction === 'DOWN'));
+			floorObj.downAssigned = false;
+		}
+	}
 	}
 
 	decideNextMove() {
@@ -274,15 +284,21 @@ class Elevator {
 			return;
 		}
 
-		// Ưu tiên 2: Tìm yêu cầu từ sảnh chờ
-		const target = this.findNearestRequest();
-		if (target !== null && target !== currentFloor) {
-			if (target > currentFloor) this.state = 'UP';
-			else if (target < currentFloor) this.state = 'DOWN';
+	// Ưu tiên 2: Tìm yêu cầu từ sảnh chờ
+	const target = this.findNearestRequest();
+	if (target !== null) {
+		if (target > currentFloor) {
+			this.state = 'UP';
+		} else if (target < currentFloor) {
+			this.state = 'DOWN';
 		} else {
-			// Không có việc gì, nghỉ
-			this.state = 'IDLE';
+			// BUG FIX: target === currentFloor, cần chuyển sang LOADING để đón khách
+			this.state = 'LOADING';
 		}
+	} else {
+		// Không có việc gì, nghỉ
+		this.state = 'IDLE';
+	}
 	}
 
 	update() {
@@ -318,16 +334,16 @@ class Elevator {
 			this.currentFloor += speedPerFrameValue;
 			if (this.currentFloor >= CONFIG.NUM_FLOORS) {
 				this.currentFloor = CONFIG.NUM_FLOORS;
-				// Kiểm tra xem có nên dừng tại tầng cao nhất không
-				if (this.shouldStopToPickUpPeople(CONFIG.NUM_FLOORS)) {
-					this.previousState = 'UP';
-					this.state = 'LOADING';
-					this.timer = 0;
-				} else {
-					// Không có việc gì, chuyển sang IDLE
-					this.previousState = 'UP';
-					this.state = 'IDLE';
-				}
+			// Kiểm tra xem có nên dừng tại tầng cao nhất không
+			if (this.shouldStopToPickUpPeople(CONFIG.NUM_FLOORS)) {
+				this.previousState = 'UP';
+				this.state = 'LOADING';
+				this.timer = 0;
+			} else {
+				// BUG FIX: Không có việc tại tầng này, kiểm tra các yêu cầu khác
+				this.previousState = 'UP';
+				this.decideNextMove();
+			}
 			}
 
 			// Kiểm tra xem có đi qua tầng mới không
@@ -340,16 +356,16 @@ class Elevator {
 			this.currentFloor -= speedPerFrameValue;
 			if (this.currentFloor <= 1) {
 				this.currentFloor = 1;
-				// Kiểm tra xem có nên dừng tại tầng 1 không
-				if (this.shouldStopToPickUpPeople(1)) {
-					this.previousState = 'DOWN';
-					this.state = 'LOADING';
-					this.timer = 0;
-				} else {
-					// Không có việc gì, chuyển sang IDLE
-					this.previousState = 'DOWN';
-					this.state = 'IDLE';
-				}
+			// Kiểm tra xem có nên dừng tại tầng 1 không
+			if (this.shouldStopToPickUpPeople(1)) {
+				this.previousState = 'DOWN';
+				this.state = 'LOADING';
+				this.timer = 0;
+			} else {
+				// BUG FIX: Không có việc tại tầng này, kiểm tra các yêu cầu khác
+				this.previousState = 'DOWN';
+				this.decideNextMove();
+			}
 			}
 
 			// Kiểm tra xem có đi qua tầng mới không
@@ -429,13 +445,13 @@ class SimulationEngine {
 			if (isAbove && direction === 'UP') {
 				return distance;
 			} else {
-				return 2 * this.floors.length + distance;
+				return 2 * this.floors.length - (floor - currentFloor);
 			}
 		} else if (elevator.state === 'DOWN' || elevator.previousState === 'DOWN') {
 			if (isBelow && direction === 'DOWN') {
 				return distance;
 			} else {
-				return 2 * this.floors.length + distance;
+				return floor + currentFloor;
 			}
 		} else {
 			// IDLE
@@ -445,6 +461,27 @@ class SimulationEngine {
 
 	// Phân bổ yêu cầu chưa được gán cho thang máy gần nhất
 	dispatchRequests() {
+		// BUG FIX: Kiểm tra và reset stale assigned flags
+		// Nếu flag = true nhưng không có elevator nào có request đó, reset flag
+		for (const floor of this.floors) {
+			if (floor.upAssigned && floor.upQueue.length > 0) {
+				const hasAssignment = this.elevators.some(elev => 
+					elev.externalRequests.some(req => req.floor === floor.level && req.direction === 'UP')
+				);
+				if (!hasAssignment) {
+					floor.upAssigned = false;
+				}
+			}
+			if (floor.downAssigned && floor.downQueue.length > 0) {
+				const hasAssignment = this.elevators.some(elev => 
+					elev.externalRequests.some(req => req.floor === floor.level && req.direction === 'DOWN')
+				);
+				if (!hasAssignment) {
+					floor.downAssigned = false;
+				}
+			}
+		}
+		
 		for (const floor of this.floors) {
 			// Xử lý yêu cầu UP chưa được gán
 			if (floor.upQueue.length > 0 && !floor.upAssigned) {
